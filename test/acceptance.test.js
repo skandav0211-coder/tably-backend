@@ -6,7 +6,7 @@ const bcrypt = require('bcryptjs');
 
 let server, base, db, adminCookie;
 const PASS = 'correct horse battery';
-const outbox = []; const mailer = { send: async (m) => { outbox.push(m); } };
+const outbox = []; const mailer = { sendMail: async (m) => { outbox.push(m); } };
 const lastCode = (to = 'owner@x.com') => /code is (\d{6})/.exec([...outbox].reverse().find(x => x.to === to).text)[1];
 const lastAuthCode = (to) => /Your code is (\d{6})/.exec([...outbox].reverse().find(x => x.to === to).text)[1];
 const wrongAuthCode = (to) => lastAuthCode(to) === '000000' ? '000001' : '000000';
@@ -52,13 +52,40 @@ const bill = (id, extra = {}) => ({ clientTxnId: id, invoiceNo: 'D1-' + id.repla
 test.before(async () => {
   db = openDb(':memory:');
   db.prepare('INSERT INTO admins(id,email,password_hash,totp_secret) VALUES (?,?,?,?)').run('ADM-1', 'owner@x.com', bcrypt.hashSync(PASS, 4), '');
+  const configuredOrigins = process.env.ADMIN_PORTAL_ORIGINS;
+  process.env.ADMIN_PORTAL_ORIGINS = ' http://localhost:5173/ ';
   const app = createApp(db, { noRateLimit: true, mailer });
+  if (configuredOrigins === undefined) delete process.env.ADMIN_PORTAL_ORIGINS;
+  else process.env.ADMIN_PORTAL_ORIGINS = configuredOrigins;
   await new Promise(r => { server = app.listen(0, r); });
   base = 'http://127.0.0.1:' + server.address().port;
   const l = await adminLogin(); assert.equal(l.s2.status, 200);
   adminCookie = l.cookie;
 });
 test.after(() => server.close());
+
+test('health endpoint is unauthenticated and returns only a simple status', async () => {
+  const response = await call('GET', '/health');
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json, { ok: true });
+});
+
+test('smoke: signup emails a code, verifies the account, then email/password login succeeds', async () => {
+  const email = 'smoke-flow@example.test';
+  const registration = await call('POST', '/api/auth/register', {
+    body: { email, password: PASS, ownerName: 'Smoke Owner', phone: '9000000052' },
+  });
+  assert.equal(registration.status, 202);
+  const code = lastAuthCode(email);
+  const verification = await call('POST', '/api/auth/register/verify', {
+    body: { challenge: registration.json.challenge, code },
+  });
+  assert.equal(verification.status, 200);
+  assert.ok(verification.json.token);
+  const login = await call('POST', '/api/auth/login', { body: { email, password: PASS } });
+  assert.equal(login.status, 200);
+  assert.ok(login.json.token);
+});
 
 test('standalone admin portal origin can use credentialed admin APIs', async () => {
   const r = await fetch(base + '/admin-api/login', {
@@ -523,7 +550,7 @@ test('EMAIL SIGN-IN: codes expire; resend has a cooldown and a cap; mail failure
   db.prepare('UPDATE admin_challenges SET expires_at=1 WHERE id=?').run(s1.json.challenge);
   assert.equal((await call('POST', '/admin-api/login/verify', { body: { challenge: s1.json.challenge, code: fresh } })).status, 401);   // expired
   void code;
-  const failing = createApp(db, { noRateLimit: true, mailer: { send: async () => { throw new Error('smtp down'); } } });
+  const failing = createApp(db, { noRateLimit: true, mailer: { sendMail: async () => { throw new Error('smtp down'); } } });
   const srv = await new Promise(r => { const x = failing.listen(0, () => r(x)); }); const b2 = 'http://127.0.0.1:' + srv.address().port;
   const r = await fetch(b2 + '/admin-api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'owner@x.com', password: PASS }) });
   assert.equal(r.status, 502); assert.equal(r.headers.get('set-cookie'), null); srv.close();

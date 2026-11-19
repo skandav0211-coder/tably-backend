@@ -9,10 +9,14 @@ const { newId } = require('./db');
 const { entitlement } = require('./entitlement');
 const { DAY, addMonths, nowIso, parseCookies } = require('./util');
 const { authCodeEmail } = require('./mailer');
+const { validateProductionEnv } = require('./config');
+
+function normalizeOrigins(value) {
+  return value.split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean);
+}
 
 function createApp(db, opts = {}) {
-  if (process.env.NODE_ENV === 'production' && !(process.env.USER_JWT_SECRET && process.env.ADMIN_JWT_SECRET && process.env.ENTITLEMENT_SECRET))
-    throw new Error('USER_JWT_SECRET, ADMIN_JWT_SECRET and ENTITLEMENT_SECRET must be set in production');
+  if (process.env.NODE_ENV === 'production') validateProductionEnv(process.env);
   const USER_SECRET = opts.userSecret || process.env.USER_JWT_SECRET || crypto.randomBytes(32).toString('hex');
   const ADMIN_SECRET = opts.adminSecret || process.env.ADMIN_JWT_SECRET || crypto.randomBytes(32).toString('hex');
   const ENT_SECRET = opts.entSecret || process.env.ENTITLEMENT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -23,8 +27,11 @@ function createApp(db, opts = {}) {
   const app = express();
   app.set('trust proxy', 1);
   app.use(helmet());
-  const adminOrigins = new Set((process.env.ADMIN_PORTAL_ORIGINS || '')
-    .split(',').map((origin) => origin.trim()).filter(Boolean));
+  const origins = normalizeOrigins(process.env.ADMIN_PORTAL_ORIGINS || '');
+  if (process.env.NODE_ENV === 'production' && origins.some((origin) => origin.includes('*'))) {
+    throw new Error('ADMIN_PORTAL_ORIGINS must not contain wildcard origins in production');
+  }
+  const adminOrigins = new Set(origins);
   if (process.env.NODE_ENV !== 'production' && adminOrigins.size === 0) {
     adminOrigins.add('http://localhost:5173');
     adminOrigins.add('http://127.0.0.1:5173');
@@ -38,6 +45,10 @@ function createApp(db, opts = {}) {
   app.use(express.json({ limit: '1mb' }));
   app.use(['/api', '/admin-api'], (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use('/api', limit(1500));
+  app.get('/health', (req, res) => {
+    db.prepare('SELECT 1').get();
+    res.json({ ok: true });
+  });
 
   const setting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
   const audit = (actor, action, target, reason, before, after, ip) =>
@@ -64,7 +75,7 @@ function createApp(db, opts = {}) {
     db.prepare('UPDATE auth_challenges SET code_hash=?, expires_at=?, attempts=0, last_sent_at=? WHERE id=?')
       .run(bcrypt.hashSync(code, 8), Date.now() + CODE_MIN * 60000, Date.now(), challenge.id);
     if (process.env.NODE_ENV !== 'production') console.log(`[AUTH CODE] ${challenge.email} (${challenge.purpose}): ${code}`);
-    await mailer.send(authCodeEmail({ to: challenge.email, code, minutes: CODE_MIN, purpose: challenge.purpose }));
+    await mailer.sendMail(authCodeEmail({ to: challenge.email, code, minutes: CODE_MIN, purpose: challenge.purpose }));
   }
   function makeChallenge({ userId = null, email, purpose, phone = null, ownerName = null, passwordHash = null }) {
     const id = crypto.randomBytes(16).toString('hex');

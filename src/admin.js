@@ -18,7 +18,7 @@ module.exports = function mountAdmin(app, c) {
   async function sendCode(a, challengeId, req) {
     const code = String(crypto.randomInt(0, 1e6)).padStart(6, '0');
     db.prepare('UPDATE admin_challenges SET code_hash=?, expires_at=?, attempts=0, last_sent_at=? WHERE id=?').run(bcrypt.hashSync(code, 8), Date.now() + CODE_MIN * 60000, Date.now(), challengeId);
-    await mailer.send(signInCodeEmail({ to: a.email, code, minutes: CODE_MIN, ip: ip(req), when: new Date().toUTCString() }));
+    await mailer.sendMail(signInCodeEmail({ to: a.email, code, minutes: CODE_MIN, ip: ip(req), when: new Date().toUTCString() }));
   }
   const reply = (a, id) => ({ challenge: id, email: mask(a.email), expiresInSec: CODE_MIN * 60, resendAfterSec: COOLDOWN_MS / 1000 });
 

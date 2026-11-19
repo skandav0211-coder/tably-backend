@@ -4,11 +4,16 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "backup": "node scripts/backup.js",
+    "lint": "for file in src/*.js scripts/*.js test/*.js; do node --check \"$file\" || exit 1; done"
+  },
+  "engines": {
+    "node": ">=24 <25"
   },
   "dependencies": {
     "bcryptjs": "^3.0.0",
-    "better-sqlite3": "*",
+    "better-sqlite3": "^13.2.0",
     "cors": "*",
     "express": "*",
     "express-rate-limit": "*",

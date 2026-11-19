@@ -2,8 +2,12 @@ node_modules/
 .env
 .env.*
 !.env.example
-billing.db
-billing.db-*
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+backups/
 *.log
 npm-debug.log*
-

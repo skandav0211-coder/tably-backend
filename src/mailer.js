@@ -1,17 +1,72 @@
 const path = require('path');
+const fs = require('fs');
 const nodemailer = require('nodemailer');
 
-// Sends real email through SMTP when SMTP_HOST is set. Without SMTP it only prints to the console in development
-// and returns null in production (the server then refuses to start, because admins could not receive sign-in codes).
-function createMailer(env = process.env) {
-  if (env.SMTP_HOST) {
+const logoPath = path.join(__dirname, '..', 'assets', 'logo-mark.png');
+
+function selectedTransport(env) {
+  const configured = env.MAIL_TRANSPORT;
+  if (configured) return configured;
+  if (env.NODE_ENV === 'production') return 'api';
+  return env.SMTP_HOST ? 'smtp' : 'console';
+}
+
+function validateMailerConfig(env = process.env) {
+  const transport = selectedTransport(env);
+  if (transport === 'console' && env.NODE_ENV !== 'production') return transport;
+  if (!['api', 'smtp'].includes(transport)) {
+    throw new Error('MAIL_TRANSPORT must be api or smtp (console is development-only)');
+  }
+  if (transport === 'api' && !env.MAIL_FROM) throw new Error('MAIL_FROM must be set when MAIL_TRANSPORT=api');
+  if (transport === 'api' && !env.BREVO_API_KEY) throw new Error('BREVO_API_KEY must be set when MAIL_TRANSPORT=api');
+  if (transport === 'smtp') {
+    const missing = ['SMTP_HOST'].filter((key) => !env[key]);
+    if (!env.MAIL_FROM && !env.SMTP_USER) missing.push('MAIL_FROM (or SMTP_USER)');
+    if (env.SMTP_USER && !env.SMTP_PASS) missing.push('SMTP_PASS');
+    if (missing.length) throw new Error(`Set ${missing.join(', ')} when MAIL_TRANSPORT=smtp`);
+  }
+  return transport;
+}
+
+function apiAttachment(attachment) {
+  const content = attachment.content || fs.readFileSync(attachment.path).toString('base64');
+  return {
+    name: attachment.filename,
+    content,
+    ...(attachment.cid ? { contentId: attachment.cid } : {}),
+  };
+}
+
+function createMailer(env = process.env, fetchImpl = globalThis.fetch) {
+  const transportKind = validateMailerConfig(env);
+  if (transportKind === 'api') {
+    if (typeof fetchImpl !== 'function') throw new Error('Fetch is required for the Brevo email API transport');
+    return {
+      kind: 'api',
+      async sendMail({ to, subject, text, html, attachments = [] }) {
+        const response = await fetchImpl('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: { 'api-key': env.BREVO_API_KEY, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sender: { email: env.MAIL_FROM, name: 'Tably' },
+            to: [{ email: to }],
+            subject,
+            textContent: text,
+            htmlContent: html,
+            ...(attachments.length ? { attachment: attachments.map(apiAttachment) } : {}),
+          }),
+        });
+        if (!response.ok) throw new Error(`Brevo email API returned HTTP ${response.status}`);
+      },
+    };
+  }
+  if (transportKind === 'smtp') {
     const port = Number(env.SMTP_PORT || 587);
     const transport = nodemailer.createTransport({ host: env.SMTP_HOST, port, secure: env.SMTP_SECURE === '1' || port === 465,
       auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined });
-    return { kind: 'smtp', send: (m) => transport.sendMail({ from: env.MAIL_FROM || env.SMTP_USER, ...m }), verify: () => transport.verify() };
+    return { kind: 'smtp', sendMail: (m) => transport.sendMail({ from: env.MAIL_FROM || env.SMTP_USER, ...m }), verify: () => transport.verify() };
   }
-  if (env.NODE_ENV === 'production') return null;
-  return { kind: 'console', send: async (m) => { console.log(`[DEV MAIL] to=${m.to} | ${m.subject}\n${m.text}\n`); } };
+  return { kind: 'console', sendMail: async (m) => { console.log(`[DEV MAIL] to=${m.to} | ${m.subject}\n${m.text}\n`); } };
 }
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -38,4 +93,4 @@ function authCodeEmail({ to, code, minutes, purpose }) {
 <p style="color:#6b5f58;font-size:13px;margin:18px 0 0">Expires in ${minutes} minutes and works once. If you did not request this, ignore this email.</p></div></div>`;
   return { to, subject, text, html, attachments: [{ filename: 'tably.png', path: path.join(__dirname, '..', 'assets', 'logo-mark.png'), cid: 'tably-logo' }] };
 }
-module.exports = { createMailer, signInCodeEmail, authCodeEmail };
+module.exports = { createMailer, validateMailerConfig, signInCodeEmail, authCodeEmail };

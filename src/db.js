@@ -1,10 +1,29 @@
 // SQLite for the dev build; schema is plain SQL and ports directly to PostgreSQL (SRS §8).
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 function openDb(file = process.env.DB_FILE || 'billing.db') {
-  const db = new Database(file);
+  if (file !== ':memory:') {
+    const resolved = path.resolve(file);
+    const directory = path.dirname(resolved);
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      fs.accessSync(directory, fs.constants.W_OK);
+    } catch (error) {
+      throw new Error(`SQLite database directory is not writable (${directory}): ${error.message}`);
+    }
+    file = resolved;
+  }
+  let db;
+  try {
+    db = new Database(file);
+  } catch (error) {
+    throw new Error(`Could not open SQLite database (${file}): ${error.message}`);
+  }
   db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   db.exec(`
   CREATE TABLE IF NOT EXISTS users (
