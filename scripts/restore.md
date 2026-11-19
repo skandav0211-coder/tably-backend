@@ -1,30 +1,16 @@
-# Restoring a SQLite backup
+# Restoring a Railway off-site backup
 
-1. Stop the service so no process has the database open:
+Restore only while the Railway service is stopped so SQLite has no open handles. The script validates AES-GCM authentication and SQLite integrity before replacing the target file.
 
-   ```sh
-   sudo systemctl stop tably
-   ```
-
-2. Verify the backup file and copy it over the configured `DB_FILE` (the production default is `/var/lib/tably/billing.db`):
-
-   ```sh
-   sudo cp /var/lib/tably/backups/<backup-file>.db /var/lib/tably/billing.db
-   sudo chown tably:tably /var/lib/tably/billing.db
-   sudo chmod 600 /var/lib/tably/billing.db
-   ```
-
-3. Remove stale SQLite sidecar files for the restored database:
+1. Stop the Railway service and make a separate copy of the current `/data/billing.db` if it is accessible.
+2. Ensure the service environment has the matching `BACKUP_S3_*` settings and the exact `BACKUP_ENCRYPTION_KEY` used when the backup was created.
+   If `BACKUP_DISABLED=true`, temporarily unset it for the restore command.
+3. Run this from a Railway shell or a trusted environment with access to the same S3 bucket and mounted volume:
 
    ```sh
-   sudo rm -f /var/lib/tably/billing.db-wal /var/lib/tably/billing.db-shm
+   npm run restore-backup -- backups/tably-<timestamp>.db.gz.enc /data/billing.db
    ```
 
-4. Start the service and verify the health endpoint:
+4. Start the service and verify `/health` and application data before discarding the old database copy.
 
-   ```sh
-   sudo systemctl start tably
-   curl -fsS https://YOUR-SUBDOMAIN.duckdns.org/health
-   ```
-
-Keep the pre-restore database copy separately until the restored instance has been checked.
+Do not rotate or lose `BACKUP_ENCRYPTION_KEY` without retaining the prior key; encrypted backups are unrecoverable without it.

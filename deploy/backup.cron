@@ -1,6 +1,0 @@
-# Install as the tably user's crontab: crontab -u tably -e
-# Nightly consistent SQLite backup; remove backups older than 14 days.
-15 2 * * * mkdir -p /var/lib/tably/backups && cd /opt/tably/backend && DB_FILE=/var/lib/tably/billing.db npm run backup -- "/var/lib/tably/backups/tably-$(date +\%F-\%H\%M\%S).db" >> /var/lib/tably/backup.log 2>&1 && find /var/lib/tably/backups -type f -name 'tably-*.db' -mtime +14 -delete
-
-# Example off-VM copy (configure SSH keys and replace the remote host/path):
-# 30 3 * * * newest=$(find /var/lib/tably/backups -type f -name 'tably-*.db' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-) && [ -n "$newest" ] && scp "$newest" backup-user@backup-host:/backups/tably/

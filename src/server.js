@@ -3,9 +3,14 @@ const { createApp } = require('./app');
 const { createMailer } = require('./mailer');
 const { runReminders } = require('./reminders');
 const { validateProductionEnv } = require('./config');
+const { validateBackupConfig, startBackupScheduler } = require('./backup');
 const bcrypt = require('bcryptjs');
 
 if (process.env.NODE_ENV === 'production') validateProductionEnv(process.env);
+const backupConfig = validateBackupConfig(process.env);
+if (!backupConfig.enabled && process.env.NODE_ENV !== 'production' && !backupConfig.disabled) {
+  console.warn(`Off-site backups are not configured; scheduled backups are skipped (${backupConfig.missing.join(', ')}).`);
+}
 const mailer = createMailer();
 const db = openDb();
 // One-time Super Admin bootstrap (owner-only; no public sign-up route exists). Sign-in codes go to ADMIN_EMAIL.
@@ -27,7 +32,22 @@ const reminderTimer = setInterval(() => { try { runReminders(db, notify); } catc
 reminderTimer.unref();
 runReminders(db, notify);
 const port = process.env.PORT || 3000;
-const host = process.env.HOST || (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
+const host = process.env.HOST || '0.0.0.0';
+const backupScheduler = startBackupScheduler({
+  db,
+  config: backupConfig,
+  alert: async (message) => {
+    console.error(message);
+    if (process.env.ALERT_WEBHOOK_URL) {
+      const response = await fetch(process.env.ALERT_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: message }),
+      });
+      if (!response.ok) throw new Error(`Alert webhook returned HTTP ${response.status}`);
+    }
+  },
+});
 const server = app.listen(port, host, () => console.log(`Tably backend on ${host}:${port} (mail: ${mailer.kind})`));
 
 let shuttingDown = false;
@@ -37,20 +57,32 @@ function shutdown(signal) {
   clearInterval(reminderTimer);
   console.log(`Received ${signal}; shutting down`);
   server.close((error) => {
-    try {
-      if (db.pragma('journal_mode', { simple: true }).toLowerCase() === 'wal') {
-        db.pragma('wal_checkpoint(TRUNCATE)');
+    (async () => {
+      let failed = false;
+      try {
+        await backupScheduler.stop();
+      } catch (backupError) {
+        console.error('Scheduled backup shutdown failed:', backupError.message);
+        failed = true;
       }
-      db.close();
-    } catch (closeError) {
-      console.error('Database shutdown failed:', closeError.message);
-      process.exitCode = 1;
-    }
-    if (error) {
-      console.error('HTTP server shutdown failed:', error.message);
-      process.exitCode = 1;
-    }
-    process.exit(process.exitCode || 0);
+      try {
+        if (db.pragma('journal_mode', { simple: true }).toLowerCase() === 'wal') {
+          db.pragma('wal_checkpoint(TRUNCATE)');
+        }
+        db.close();
+      } catch (closeError) {
+        console.error('Database shutdown failed:', closeError.message);
+        failed = true;
+      }
+      if (error) {
+        console.error('HTTP server shutdown failed:', error.message);
+        failed = true;
+      }
+      process.exit(failed ? 1 : 0);
+    })().catch((shutdownError) => {
+      console.error('Shutdown failed:', shutdownError.message);
+      process.exit(1);
+    });
   });
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
